@@ -1,3 +1,5 @@
+Forked from https://github.com/homebridge/HAP-NodeJS
+
 <span align="center">
   
 # HAP-NodeJS
