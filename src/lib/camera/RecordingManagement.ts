@@ -1,9 +1,9 @@
 import crypto from "crypto";
 import createDebug from "debug";
 import { EventEmitter } from "events";
-import { VideoCodecType } from ".";
+import { AudioBitrate, VideoCodecType } from ".";
 import { Access, Characteristic, CharacteristicEventTypes } from "../Characteristic";
-import { AudioBitrate, CameraRecordingDelegate, StateChangeDelegate } from "../controller";
+import { CameraRecordingDelegate, StateChangeDelegate } from "../controller";
 import {
   DataStreamConnection,
   DataStreamConnectionEvent,
@@ -30,8 +30,10 @@ const debug = createDebug("HAP-NodeJS:Camera:RecordingManagement");
 
 /**
  * Describes options passed to the {@link RecordingManagement}.
+ *
+ * @group Camera
  */
-export type CameraRecordingOptions = {
+export interface CameraRecordingOptions {
   /**
    * The size of the prebuffer in milliseconds. It must be at least 4000 ms.
    * A sensible value for this property is in the interval [4000, 8000].
@@ -48,7 +50,7 @@ export type CameraRecordingOptions = {
    * which derives the {@link EventTriggerOption}s from application state.
    *
    * {@link EventTriggerOption}s are derived automatically as follows:
-   * * {@link EventTriggerOption.MOTION} is enabled when a {@link MotionSensor} is configured (via {@link CameraControllerOptions.sensors}).
+   * * {@link EventTriggerOption.MOTION} is enabled when a {@link Service.MotionSensor} is configured (via {@link CameraControllerOptions.sensors}).
    * * {@link EventTriggerOption.DOORBELL} is enabled when the {@link DoorbellController} is used.
    *
    * Note: This property is **ADDITIVE**. Meaning if the {@link CameraController} decides to add
@@ -68,6 +70,8 @@ export type CameraRecordingOptions = {
 
 /**
  * Describes the Event trigger.
+ *
+ * @group Camera
  */
 export const enum EventTriggerOption {
   /**
@@ -76,14 +80,25 @@ export const enum EventTriggerOption {
   MOTION = 0x01,
   /**
    * The Doorbell trigger. If enabled a doorbell button press should trigger the start of a recording.
+   *
+   * Note: While the doorbell is defined by the HomeKit specification and HAP-NodeJS supports (and the
+   * {@link RecordingManagement} advertises support for it), HomeKit HomeHubs will (as of now, iOS 15-16)
+   * never enable Doorbell triggers. Seemingly this is currently unsupported by Apple.
+   * See https://github.com/homebridge/HAP-NodeJS/issues/976#issuecomment-1280301989.
    */
   DOORBELL = 0x02,
 }
 
+/**
+ * @group Camera
+ */
 export const enum MediaContainerType {
   FRAGMENTED_MP4 = 0x00
 }
 
+/**
+ * @group Camera
+ */
 export interface MediaContainerConfiguration {
   /**
    * The type of media container.
@@ -96,6 +111,9 @@ export interface MediaContainerConfiguration {
   fragmentLength: number;
 }
 
+/**
+ * @group Camera
+ */
 export interface VideoRecordingOptions {
   type: VideoCodecType;
   parameters: H264CodecParameters;
@@ -111,6 +129,9 @@ export interface VideoRecordingOptions {
   resolutions: Resolution[];
 }
 
+/**
+ * @group Camera
+ */
 export type AudioRecordingOptions = {
   /**
    * List (or single entry) of supported {@link AudioRecordingCodec}s.
@@ -118,6 +139,9 @@ export type AudioRecordingOptions = {
   codecs: AudioRecordingCodec | AudioRecordingCodec[],
 }
 
+/**
+ * @group Camera
+ */
 export type AudioRecordingCodec = {
   type: AudioRecordingCodecType,
   /**
@@ -133,12 +157,14 @@ export type AudioRecordingCodec = {
 }
 
 /**
- * This type describes the SelectedCameraRecordingConfiguration (written by the device to {@link SelectedCameraRecordingConfiguration}).
+ * This type describes the SelectedCameraRecordingConfiguration (written by the device to {@link Characteristic.SelectedCameraRecordingConfiguration}).
+ *
+ * @group Camera
  */
 export interface CameraRecordingConfiguration {
   /**
    * The size of the prebuffer in milliseconds.
-   * This value is less or equal of the value advertised in the {@link SupportedCameraRecordingConfiguration}.
+   * This value is less or equal of the value advertised in the {@link Characteristic.SupportedCameraRecordingConfiguration}.
    */
   prebufferLength: number;
   /**
@@ -168,6 +194,9 @@ export interface CameraRecordingConfiguration {
   },
 }
 
+/**
+ * @group Camera
+ */
 export interface SelectedH264CodecParameters {
   profile: H264Profile,
   level: H264Level,
@@ -204,11 +233,17 @@ const enum SelectedCameraRecordingConfigurationTypes {
   SELECTED_AUDIO_CONFIGURATION = 0x03,
 }
 
+/**
+ * @group Camera
+ */
 export const enum AudioRecordingCodecType {
   AAC_LC = 0,
   AAC_ELD = 1,
 }
 
+/**
+ * @group Camera
+ */
 export const enum AudioRecordingSamplerate {
   KHZ_8 = 0,
   KHZ_16 = 1,
@@ -253,10 +288,17 @@ const enum SupportedAudioRecordingConfigurationTypes {
   AUDIO_CODEC_CONFIGURATION = 0x01,
 }
 
+/**
+ * @group Camera
+ */
 export const enum PacketDataType {
-  // mp4 moov box
+  /**
+   * mp4 moov box
+   */
   MEDIA_INITIALIZATION = "mediaInitialization",
-  // mp4 moof + mdat boxes
+  /**
+   * mp4 moof + mdat boxes
+   */
   MEDIA_FRAGMENT = "mediaFragment",
 }
 
@@ -275,6 +317,9 @@ interface DataSendDataEvent {
   endOfStream?: boolean;
 }
 
+/**
+ * @group Camera
+ */
 export interface RecordingPacket {
   /**
    * The `Buffer` containing the data of the packet.
@@ -288,12 +333,18 @@ export interface RecordingPacket {
 }
 
 
-interface RecordingManagementServices {
+/**
+ * @group Camera
+ */
+export interface RecordingManagementServices {
   recordingManagement: CameraRecordingManagement;
   operatingMode: CameraOperatingMode;
   dataStreamManagement: DataStreamManagement;
 }
 
+/**
+ * @group Camera
+ */
 export interface RecordingManagementState {
   /**
    * This property stores a hash of the supported configurations (recording, video and audio) of
@@ -335,6 +386,9 @@ export interface RecordingManagementState {
   periodicSnapshotsActive: boolean;
 }
 
+/**
+ * @group Camera
+ */
 export class RecordingManagement {
   readonly options: CameraRecordingOptions;
   readonly delegate: CameraRecordingDelegate;
@@ -377,6 +431,11 @@ export class RecordingManagement {
    * The array is initialized my the caller shortly after calling the constructor.
    */
   sensorServices: Service[] = [];
+
+  /**
+   * Defines if recording is enabled for this recording management.
+   */
+  private recordingActive = false;
 
   constructor(
     options: CameraRecordingOptions,
@@ -436,7 +495,14 @@ export class RecordingManagement {
       .setProps({ adminOnlyAccess: [Access.WRITE] });
 
     this.recordingManagementService.getCharacteristic(Characteristic.Active)
-      .onSet(value => this.delegate.updateRecordingActive(!!value))
+      .onSet(value => {
+        if (!!value === this.recordingActive) {
+          return; // skip delegate call if state didn't change!
+        }
+
+        this.recordingActive = !!value;
+        this.delegate.updateRecordingActive(this.recordingActive);
+      })
       .on(CharacteristicEventTypes.CHANGE, () => this.stateChangeDelegate?.())
       .setProps({ adminOnlyAccess: [Access.WRITE] });
 
@@ -486,7 +552,7 @@ export class RecordingManagement {
       return;
     }
 
-    if (!this.recordingManagementService.getCharacteristic(Characteristic.Active).value) {
+    if (!this.recordingActive) {
       connection.sendResponse(Protocols.DATA_SEND, Topics.OPEN, id, HDSStatus.PROTOCOL_SPECIFIC_ERROR, {
         status: HDSProtocolSpecificErrorReason.NOT_ALLOWED,
       });
@@ -541,15 +607,19 @@ export class RecordingManagement {
   private handleSelectedCameraRecordingConfigurationWrite(value: any): void {
     const configuration = this.parseSelectedConfiguration(value);
 
+    const changed = this.selectedConfiguration?.base64 !== value;
+
     this.selectedConfiguration = {
       parsed: configuration,
       base64: value,
     };
 
-    this.delegate.updateRecordingConfiguration(this.selectedConfiguration.parsed);
+    if (changed) {
+      this.delegate.updateRecordingConfiguration(this.selectedConfiguration.parsed);
 
-    // notify controller storage about updated values!
-    this.stateChangeDelegate?.();
+      // notify controller storage about updated values!
+      this.stateChangeDelegate?.();
+    }
   }
 
   private parseSelectedConfiguration(value: string): CameraRecordingConfiguration {
@@ -749,7 +819,7 @@ export class RecordingManagement {
       },
       selectedConfiguration: this.selectedConfiguration?.base64,
 
-      recordingActive: !!this.recordingManagementService.getCharacteristic(Characteristic.Active).value,
+      recordingActive: this.recordingActive,
       recordingAudioActive: !!this.recordingManagementService.getCharacteristic(Characteristic.RecordingAudioActive).value,
 
       eventSnapshotsActive: !!this.operatingModeService.getCharacteristic(Characteristic.EventSnapshotsActive).value,
@@ -777,6 +847,7 @@ export class RecordingManagement {
       }
     }
 
+    this.recordingActive = serialized.recordingActive;
     this.recordingManagementService.updateCharacteristic(Characteristic.Active, serialized.recordingActive);
     this.recordingManagementService.updateCharacteristic(Characteristic.RecordingAudioActive, serialized.recordingAudioActive);
 
@@ -839,6 +910,9 @@ export class RecordingManagement {
 }
 
 
+/**
+ * @group Camera
+ */
 const enum CameraRecordingStreamEvents {
   /**
    * This event is fired when the recording stream is closed.
@@ -848,6 +922,9 @@ const enum CameraRecordingStreamEvents {
   CLOSED = "closed",
 }
 
+/**
+ * @group Camera
+ */
 declare interface CameraRecordingStream {
   on(event: "closed", listener: () => void): this;
 
@@ -857,6 +934,8 @@ declare interface CameraRecordingStream {
 /**
  * A `CameraRecordingStream` represents an ongoing stream request for a HomeKit Secure Video recording.
  * A single camera can only support one ongoing recording at a time.
+ *
+ * @group Camera
  */
 class CameraRecordingStream extends EventEmitter implements DataStreamProtocolHandler {
   readonly connection: DataStreamConnection;

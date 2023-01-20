@@ -4,6 +4,12 @@ Forked from https://github.com/homebridge/HAP-NodeJS
   
 # HAP-NodeJS
  
+  
+  <a href="https://www.npmjs.com/package/hap-nodejs"><img title="npm version" src="https://badgen.net/npm/v/hap-nodejs" ></a>
+  <a href="https://www.npmjs.com/package/hap-nodejs/v/beta"><img title="npm version beta" src="https://badgen.net/npm/v/hap-nodejs/beta" ></a>
+  <a href="https://www.npmjs.com/package/hap-nodejs"><img title="npm downloads" src="https://badgen.net/npm/dt/hap-nodejs" ></a>
+  <a href="https://github.com/homebridge/HAP-NodeJS/actions/workflows/build.yml"><img title="Node Build" src="https://github.com/homebridge/HAP-NodeJS/actions/workflows/build.yml/badge.svg" ></a>
+  <a href='https://coveralls.io/github/homebridge/HAP-NodeJS'><img src='https://coveralls.io/repos/github/homebridge/HAP-NodeJS/badge.svg' alt='Coverage Status' /></a>
 
 </span>
 
@@ -51,7 +57,7 @@ If you wish to do a contribution please read through our [CONTRIBUTING][contribu
 
 Special thanks to [Alex Skalozub][link-alex-skalozub], who reverse-engineeredthe server side HAP.
 ~~You can find his research [here][link-homekit-research].~~
-(Sadly, on Nov 4, Apple sent the [DMCA][link-apple-dmca] request to Github to remove the research.)
+(Sadly, on Nov 4 2014, Apple sent the [DMCA][link-apple-dmca] request to Github to remove the research.)
 
 [There](http://instagram.com/p/t4cPlcDksQ/) is a video demo running this project on Intel Edison.
 

@@ -5,6 +5,7 @@ import { SRP, SrpServer } from "fast-srp-hap";
 import { IncomingMessage, ServerResponse } from "http";
 import tweetnacl from "tweetnacl";
 import { URL } from "url";
+import { consideredTrue, HAPMimeTypes, PairingStates, PairMethods, TLVValues } from "../internal-types";
 import {
   AccessoriesResponse,
   CharacteristicId,
@@ -12,72 +13,24 @@ import {
   CharacteristicsReadResponse,
   CharacteristicsWriteRequest,
   CharacteristicsWriteResponse,
-  consideredTrue,
+  CharacteristicValue,
+  Nullable,
   PrepareWriteRequest,
   ResourceRequest,
-} from "../internal-types";
-import { CharacteristicValue, Nullable, VoidCallback } from "../types";
+  VoidCallback,
+} from "../types";
 import { AccessoryInfo, PairingInformation, PermissionTypes } from "./model/AccessoryInfo";
-import {
-  EventedHTTPServer,
-  EventedHTTPServerEvent,
-  HAPConnection,
-  HAPEncryption,
-  HAPUsername,
-} from "./util/eventedhttp";
+import { EventedHTTPServer, EventedHTTPServerEvent, HAPConnection, HAPEncryption, HAPUsername } from "./util/eventedhttp";
 import * as hapCrypto from "./util/hapCrypto";
 import { once } from "./util/once";
 import * as tlv from "./util/tlv";
 
 const debug = createDebug("HAP-NodeJS:HAPServer");
 
-const enum TLVValues {
-  // noinspection JSUnusedGlobalSymbols
-  REQUEST_TYPE = 0x00,
-  METHOD = 0x00, // (match the terminology of the spec sheet but keep backwards compatibility with entry above)
-  USERNAME = 0x01,
-  IDENTIFIER = 0x01,
-  SALT = 0x02,
-  PUBLIC_KEY = 0x03,
-  PASSWORD_PROOF = 0x04,
-  ENCRYPTED_DATA = 0x05,
-  SEQUENCE_NUM = 0x06,
-  STATE = 0x06,
-  ERROR_CODE = 0x07,
-  RETRY_DELAY = 0x08,
-  CERTIFICATE = 0x09, // x.509 certificate
-  PROOF = 0x0A,
-  SIGNATURE = 0x0A,  // apple authentication coprocessor
-  PERMISSIONS = 0x0B, // None (0x00): regular user, 0x01: Admin (able to add/remove/list pairings)
-  FRAGMENT_DATA = 0x0C,
-  FRAGMENT_LAST = 0x0D,
-  SEPARATOR = 0x0FF // Zero-length TLV that separates different TLVs in a list.
-}
-
-const enum PairMethods {
-  // noinspection JSUnusedGlobalSymbols
-  PAIR_SETUP = 0x00,
-  PAIR_SETUP_WITH_AUTH = 0x01,
-  PAIR_VERIFY = 0x02,
-  ADD_PAIRING = 0x03,
-  REMOVE_PAIRING = 0x04,
-  LIST_PAIRINGS = 0x05
-}
-
 /**
- * Pairing states (pair-setup or pair-verify). Encoded in {@link TLVValues.SEQUENCE_NUM}.
- */
-const enum PairingStates {
-  M1 = 0x01,
-  M2 = 0x02,
-  M3 = 0x03,
-  M4 = 0x04,
-  M5 = 0x05,
-  M6 = 0x06
-}
-
-/**
- * TLV error codes for the {@link TLVValues.ERROR_CODE} field.
+ * TLV error codes for the `TLVValues.ERROR_CODE` field.
+ *
+ * @group HAP Accessory Server
  */
 export const enum TLVErrorCode {
   // noinspection JSUnusedGlobalSymbols
@@ -91,20 +44,63 @@ export const enum TLVErrorCode {
   BUSY = 0x07 // cannot accept pairing request at this time
 }
 
+/**
+ * @group HAP Accessory Server
+ */
 export const enum HAPStatus {
   // noinspection JSUnusedGlobalSymbols
+
+  /**
+   * Success of the request.
+   */
   SUCCESS = 0,
+  /**
+   * The request was rejected due to insufficient privileges.
+   */
   INSUFFICIENT_PRIVILEGES = -70401,
+  /**
+   * Operation failed due to some communication failure with the characteristic.
+   */
   SERVICE_COMMUNICATION_FAILURE = -70402,
+  /**
+   * The resource is busy. Try again.
+   */
   RESOURCE_BUSY = -70403,
-  READ_ONLY_CHARACTERISTIC = -70404, // cannot write to read only
-  WRITE_ONLY_CHARACTERISTIC = -70405, // cannot read from write only
+  /**
+   * Cannot write a read-only characteristic ({@link Perms.PAIRED_WRITE} not defined).
+   */
+  READ_ONLY_CHARACTERISTIC = -70404,
+  /**
+   * Cannot read from a write-only characteristic ({@link Perms.PAIRED_READ} not defined).
+   */
+  WRITE_ONLY_CHARACTERISTIC = -70405,
+  /**
+   * Event notifications are not supported for the requested characteristic ({@link Perms.NOTIFY} not defined).
+   */
   NOTIFICATION_NOT_SUPPORTED = -70406,
+  /**
+   * The device is out of resources to process the request.
+   */
   OUT_OF_RESOURCE = -70407,
+  /**
+   * The operation timed out.
+   */
   OPERATION_TIMED_OUT = -70408,
+  /**
+   * The given resource does not exist.
+   */
   RESOURCE_DOES_NOT_EXIST = -70409,
+  /**
+   * Received an invalid value in the given request for the given characteristic.
+   */
   INVALID_VALUE_IN_REQUEST = -70410,
+  /**
+   * Insufficient authorization.
+   */
   INSUFFICIENT_AUTHORIZATION = -70411,
+  /**
+   * Operation not allowed in the current state.
+   */
   NOT_ALLOWED_IN_CURRENT_STATE = -70412,
 
   // when adding new status codes, remember to update bounds in IsKnownHAPStatusError below
@@ -112,6 +108,8 @@ export const enum HAPStatus {
 
 /**
  * Determines if the given status code is a known {@link HAPStatus} error code.
+ *
+ * @group HAP Accessory Server
  */
 export function IsKnownHAPStatusError(status: HAPStatus): boolean {
   return (
@@ -124,12 +122,14 @@ export function IsKnownHAPStatusError(status: HAPStatus): boolean {
 
 // noinspection JSUnusedGlobalSymbols
 /**
+ * @group HAP Accessory Server
  * @deprecated please use {@link TLVErrorCode} as naming is more precise
  */
 // @ts-expect-error (as we use const enums with --preserveConstEnums)
 export const Codes = TLVErrorCode;
 // noinspection JSUnusedGlobalSymbols
 /**
+ * @group HAP Accessory Server
  * @deprecated please use {@link HAPStatus} as naming is more precise
  */
 // @ts-expect-error (as we use const enums with --preserveConstEnums)
@@ -142,6 +142,8 @@ export const Status = HAPStatus;
  * must include a status {@link HAPStatus} property.
  *
  * When the response is a MULTI_STATUS EVERY entry in the characteristics property MUST include a status property (even success).
+ *
+ * @group HAP Accessory Server
  */
 export const enum HAPHTTPCode {
   // noinspection JSUnusedGlobalSymbols
@@ -162,6 +164,8 @@ export const enum HAPHTTPCode {
 /**
  * When in a request is made to the pairing endpoints, and mime type is 'application/pairing+tlv8'
  * one should use the below status codes.
+ *
+ * @group HAP Accessory Server
  */
 export const enum HAPPairingHTTPCode {
   // noinspection JSUnusedGlobalSymbols
@@ -177,20 +181,56 @@ export const enum HAPPairingHTTPCode {
 
 type HAPRequestHandler = (connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse) => void;
 
+/**
+ * @group HAP Accessory Server
+ */
 export type IdentifyCallback = VoidCallback;
 
+/**
+ * @group HAP Accessory Server
+ */
 export type HAPHttpError = { httpCode: HAPHTTPCode, status: HAPStatus};
 
+/**
+ * @group HAP Accessory Server
+ */
 export type PairingsCallback<T = void> = (error: TLVErrorCode | 0, data?: T) => void;
+/**
+ * @group HAP Accessory Server
+ */
 export type AddPairingCallback = PairingsCallback;
+/**
+ * @group HAP Accessory Server
+ */
 export type RemovePairingCallback = PairingsCallback;
+/**
+ * @group HAP Accessory Server
+ */
 export type ListPairingsCallback = PairingsCallback<PairingInformation[]>;
+/**
+ * @group HAP Accessory Server
+ */
 export type PairCallback = VoidCallback;
+/**
+ * @group HAP Accessory Server
+ */
 export type AccessoriesCallback = (error: HAPHttpError | undefined, result?: AccessoriesResponse) => void;
+/**
+ * @group HAP Accessory Server
+ */
 export type ReadCharacteristicsCallback = (error: HAPHttpError | undefined, response?: CharacteristicsReadResponse) => void;
+/**
+ * @group HAP Accessory Server
+ */
 export type WriteCharacteristicsCallback = (error: HAPHttpError | undefined, response?: CharacteristicsWriteResponse) => void;
+/**
+ * @group HAP Accessory Server
+ */
 export type ResourceRequestCallback = (error: HAPHttpError | undefined, resource?: Buffer) => void;
 
+/**
+ * @group HAP Accessory Server
+ */
 export const enum HAPServerEventTypes {
   /**
    * Emitted when the server is fully set up and ready to receive connections.
@@ -235,6 +275,9 @@ export const enum HAPServerEventTypes {
   CONNECTION_CLOSED = "connection-closed",
 }
 
+/**
+ * @group HAP Accessory Server
+ */
 export declare interface HAPServer {
   on(event: "listening", listener: (port: number, address: string) => void): this;
   on(event: "identify", listener: (callback: IdentifyCallback) => void): this;
@@ -301,7 +344,9 @@ export declare interface HAPServer {
  * the connection is open, the server can elect to issue "EVENT/1.0 200 OK" HTTP-style responses. These are
  * typically sent to inform the iOS device of a characteristic change for the accessory (like "Door was Unlocked").
  *
- * See eventedhttp.js for more detail on the implementation of this protocol.
+ * See {@link EventedHTTPServer} for more detail on the implementation of this protocol.
+ *
+ * @group HAP Accessory Server
  */
 export class HAPServer extends EventEmitter {
 
@@ -324,7 +369,7 @@ export class HAPServer extends EventEmitter {
 
   public listen(port = 0, host?: string): void {
     if (host === "::") {
-      // this will workaround "EAFNOSUPPORT: address family not supported" errors
+      // this will work around "EAFNOSUPPORT: address family not supported" errors
       // on systems where IPv6 is not supported/enabled, we just use the node default then by supplying undefined
       host = undefined;
     }
@@ -342,15 +387,15 @@ export class HAPServer extends EventEmitter {
   }
 
   /**
-   * Send a even notification for given characteristic and changed value to all connected clients.
-   * If {@param originator} is specified, the given {@link HAPConnection} will be excluded from the broadcast.
+   * Send an even notification for given characteristic and changed value to all connected clients.
+   * If `originator` is specified, the given {@link HAPConnection} will be excluded from the broadcast.
    *
    * @param aid - The accessory id of the updated characteristic.
    * @param iid - The instance id of the updated characteristic.
    * @param value - The newly set value of the characteristic.
-   * @param originator - If specified, the connection will not get a event message.
+   * @param originator - If specified, the connection will not get an event message.
    * @param immediateDelivery - The HAP spec requires some characteristics to be delivery immediately.
-   *   Namely for the {@link ButtonEvent} and the {@link ProgrammableSwitchEvent} characteristics.
+   *   Namely, for the {@link Characteristic.ButtonEvent} and the {@link Characteristic.ProgrammableSwitchEvent} characteristics.
    */
   public sendEventNotifications(aid: number, iid: number, value: Nullable<CharacteristicValue>, originator?: HAPConnection, immediateDelivery?: boolean): void {
     try {
@@ -373,11 +418,11 @@ export class HAPServer extends EventEmitter {
     request.on("end", () => {
       const url = new URL(request.url!, "http://hap-nodejs.local"); // parse the url (query strings etc)
 
-      const handler = this.getHandler(url); // TODO check that content-type is supported by the handler?
+      const handler = this.getHandler(url);
 
       if (!handler) {
         debug("[%s] WARNING: Handler for %s not implemented", this.accessoryInfo.username, request.url);
-        response.writeHead(HAPHTTPCode.NOT_FOUND, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.NOT_FOUND, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.RESOURCE_DOES_NOT_EXIST }));
       } else {
         const data = Buffer.concat(buffers);
@@ -385,7 +430,7 @@ export class HAPServer extends EventEmitter {
           handler(connection, url, request, data, response);
         } catch (error) {
           debug("[%s] Error executing route handler: %s", this.accessoryInfo.username, error.stack);
-          response.writeHead(HAPHTTPCode.INTERNAL_SERVER_ERROR, { "Content-Type": "application/hap+json" });
+          response.writeHead(HAPHTTPCode.INTERNAL_SERVER_ERROR, { "Content-Type": HAPMimeTypes.HAP_JSON });
           response.end(JSON.stringify({ status: HAPStatus.RESOURCE_BUSY })); // resource busy try again, does somehow fit?
         }
       }
@@ -424,20 +469,20 @@ export class HAPServer extends EventEmitter {
    */
   private handleIdentifyRequest(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     // POST body is empty
-    if (!this.allowInsecureRequest && this.accessoryInfo.paired()) {
-      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+    if (this.accessoryInfo.paired() && !this.allowInsecureRequest) {
+      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
       return;
     }
 
-    this.emit(HAPServerEventTypes.IDENTIFY, once((err: Error) => {
+    this.emit(HAPServerEventTypes.IDENTIFY, once(err => {
       if (!err) {
         debug("[%s] Identification success", this.accessoryInfo.username);
         response.writeHead(HAPHTTPCode.NO_CONTENT);
         response.end();
       } else {
         debug("[%s] Identification error: %s", this.accessoryInfo.username, err.message);
-        response.writeHead(HAPHTTPCode.INTERNAL_SERVER_ERROR, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.INTERNAL_SERVER_ERROR, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.RESOURCE_BUSY }));
       }
     }));
@@ -602,7 +647,7 @@ export class HAPServer extends EventEmitter {
     const encrypted = hapCrypto.chacha20_poly1305_encryptAndSeal(hkdfEncKey, Buffer.from("PS-Msg06"), null, message);
 
     // finally, notify listeners that we have been paired with a client
-    this.emit(HAPServerEventTypes.PAIR, clientUsername.toString(), clientLTPK, once((err?: Error) => {
+    this.emit(HAPServerEventTypes.PAIR, clientUsername.toString(), clientLTPK, once(err => {
       if (err) {
         debug("[%s] Error adding pairing info: %s", this.accessoryInfo.username, err.message);
         response.writeHead(HAPPairingHTTPCode.OK, { "Content-Type": "application/pairing+tlv8" });
@@ -624,7 +669,7 @@ export class HAPServer extends EventEmitter {
     if (sequence === PairingStates.M1) {
       this.handlePairVerifyM1(connection, request, response, tlvData);
     } else if (sequence === PairingStates.M3 && connection._pairVerifyState === PairingStates.M2) {
-      this.handlePairVerifyM2(connection, request, response, tlvData);
+      this.handlePairVerifyM3(connection, request, response, tlvData);
     } else {
       // Invalid state/sequence number
       response.writeHead(HAPPairingHTTPCode.BAD_REQUEST, { "Content-Type": "application/pairing+tlv8" });
@@ -665,7 +710,7 @@ export class HAPServer extends EventEmitter {
     connection._pairVerifyState = PairingStates.M2;
   }
 
-  private handlePairVerifyM2(connection: HAPConnection, request: IncomingMessage, response: ServerResponse, objects: Record<number, Buffer>): void {
+  private handlePairVerifyM3(connection: HAPConnection, request: IncomingMessage, response: ServerResponse, objects: Record<number, Buffer>): void {
     debug("[%s] Pair verify step 2/2", this.accessoryInfo.username);
     const encryptedData = objects[TLVValues.ENCRYPTED_DATA];
     const messageData = Buffer.alloc(encryptedData.length - 16);
@@ -693,7 +738,7 @@ export class HAPServer extends EventEmitter {
     const material = Buffer.concat([enc.clientPublicKey, clientUsername, enc.publicKey]);
     // since we're paired, we should have the public key stored for this client
     const clientPublicKey = this.accessoryInfo.getClientPublicKey(clientUsername.toString());
-    // if we're not actually paired, then there's nothing to verify - this client thinks it's paired with us but we
+    // if we're not actually paired, then there's nothing to verify - this client thinks it's paired with us, but we
     // disagree. Respond with invalid request (seems to match HomeKit Accessory Simulator behavior)
     if (!clientPublicKey) {
       debug("[%s] Client %s attempting to verify, but we are not paired; rejecting client", this.accessoryInfo.username, clientUsername);
@@ -729,7 +774,7 @@ export class HAPServer extends EventEmitter {
   private handlePairings(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     // Only accept /pairing request if there is a secure session
     if (!this.allowInsecureRequest && !connection.isAuthenticated()) {
-      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
       return;
     }
@@ -798,7 +843,7 @@ export class HAPServer extends EventEmitter {
         });
 
         const list = tlv.encode(TLVValues.STATE, PairingStates.M2, ...tlvList);
-        response.writeHead(HAPPairingHTTPCode.OK, { "Content-Type": "application/pairing+tlv8" });
+        response.writeHead(HAPPairingHTTPCode.OK, { "Content-Type": HAPMimeTypes.PAIRING_TLV8 });
         response.end(list);
         debug("[%s] Pairings: successfully executed LIST_PAIRINGS", this.accessoryInfo.username);
       }));
@@ -807,17 +852,17 @@ export class HAPServer extends EventEmitter {
 
   private handleAccessories(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     if (!this.allowInsecureRequest && !connection.isAuthenticated()) {
-      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
       return;
     }
     // call out to listeners to retrieve the latest accessories JSON
-    this.emit(HAPServerEventTypes.ACCESSORIES, connection, once((error: HAPHttpError | undefined, result: AccessoriesResponse) => {
+    this.emit(HAPServerEventTypes.ACCESSORIES, connection, once((error, result) => {
       if (error) {
-        response.writeHead(error.httpCode, { "Content-Type": "application/hap+json" });
+        response.writeHead(error.httpCode, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: error.status }));
       } else {
-        response.writeHead(HAPHTTPCode.OK, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.OK, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify(result));
       }
     }));
@@ -825,7 +870,7 @@ export class HAPServer extends EventEmitter {
 
   private handleCharacteristics(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     if (!this.allowInsecureRequest && !connection.isAuthenticated()) {
-      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
       return;
     }
@@ -835,7 +880,7 @@ export class HAPServer extends EventEmitter {
 
       const idParam = searchParams.get("id");
       if (!idParam) {
-        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
         return;
       }
@@ -844,8 +889,8 @@ export class HAPServer extends EventEmitter {
       for (const entry of idParam.split(",")) { // ["1.9","2.14"]
         const split = entry.split("."); // ["1","9"]
         ids.push({
-          aid: parseInt(split[0], 10), // accessory Id
-          iid: parseInt(split[1], 10), // (characteristic) instance Id
+          aid: parseInt(split[0], 10), // accessory id
+          iid: parseInt(split[1], 10), // (characteristic) instance id
         });
       }
 
@@ -861,14 +906,14 @@ export class HAPServer extends EventEmitter {
         HAPServerEventTypes.GET_CHARACTERISTICS,
         connection,
         readRequest,
-        once((error: HAPHttpError | undefined, readResponse: CharacteristicsReadResponse) => {
+        once((error, readResponse) => {
           if (error) {
-            response.writeHead(error.httpCode, { "Content-Type": "application/hap+json" });
+            response.writeHead(error.httpCode, { "Content-Type": HAPMimeTypes.HAP_JSON });
             response.end(JSON.stringify({ status: error.status }));
             return;
           }
 
-          const characteristics = readResponse.characteristics;
+          const characteristics = readResponse!.characteristics;
 
           let errorOccurred = false; // determine if we send a 207 Multi-Status
           for (const data of characteristics) {
@@ -887,20 +932,20 @@ export class HAPServer extends EventEmitter {
           }
 
           // 207 "multi-status" is returned when an error occurs reading a characteristic. otherwise 200 is returned
-          response.writeHead(errorOccurred? HAPHTTPCode.MULTI_STATUS: HAPHTTPCode.OK, { "Content-Type": "application/hap+json" });
+          response.writeHead(errorOccurred? HAPHTTPCode.MULTI_STATUS: HAPHTTPCode.OK, { "Content-Type": HAPMimeTypes.HAP_JSON });
           response.end(JSON.stringify({ characteristics: characteristics }));
         }),
       );
     } else if (request.method === "PUT") {
       if (!connection.isAuthenticated()) {
         if (!request.headers || (request.headers && request.headers.authorization !== this.accessoryInfo.pincode)) {
-          response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+          response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
           response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
           return;
         }
       }
       if (data.length === 0) {
-        response.writeHead(400, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
         return;
       }
@@ -911,33 +956,27 @@ export class HAPServer extends EventEmitter {
         HAPServerEventTypes.SET_CHARACTERISTICS,
         connection,
         writeRequest,
-        once((error: HAPHttpError | undefined, writeResponse: CharacteristicsWriteResponse) => {
+        once((error, writeResponse) => {
           if (error) {
-            response.writeHead(error.httpCode, { "Content-Type": "application/hap+json" });
+            response.writeHead(error.httpCode, { "Content-Type": HAPMimeTypes.HAP_JSON });
             response.end(JSON.stringify({ status: error.status }));
             return;
           }
 
-          const characteristics = writeResponse.characteristics;
+          const characteristics = writeResponse!.characteristics;
 
           let multiStatus = false;
           for (const data of characteristics) {
             if (data.status || data.value !== undefined) {
-            // also send multiStatus on write response requests
+              // also send multiStatus on write response requests
               multiStatus = true;
               break;
             }
           }
 
           if (multiStatus) {
-            for (const data of characteristics) { // on a 207 Multi-Status EVERY characteristic MUST include a status property
-              if (data.status === undefined) {
-                data.status = HAPStatus.SUCCESS;
-              }
-            }
-
             // 207 is "multi-status" since HomeKit may be setting multiple things and any one can fail independently
-            response.writeHead(HAPHTTPCode.MULTI_STATUS, { "Content-Type": "application/hap+json" });
+            response.writeHead(HAPHTTPCode.MULTI_STATUS, { "Content-Type": HAPMimeTypes.HAP_JSON });
             response.end(JSON.stringify({ characteristics: characteristics }));
           } else {
           // if everything went fine send 204 no content response
@@ -947,21 +986,21 @@ export class HAPServer extends EventEmitter {
         }),
       );
     } else {
-      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" }); // method not allowed
+      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON }); // method not allowed
       response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
     }
   }
 
   private handlePrepareWrite(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     if (!this.allowInsecureRequest && !connection.isAuthenticated()) {
-      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+      response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
       return;
     }
 
     if (request.method === "PUT") {
       if (data.length === 0) {
-        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
         return;
       }
@@ -982,15 +1021,15 @@ export class HAPServer extends EventEmitter {
           connection.timedWriteTimeout = undefined;
         }, prepareRequest.ttl);
 
-        response.writeHead(HAPHTTPCode.OK, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.OK, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.SUCCESS }));
         return;
       } else {
-        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
       }
     } else {
-      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
       response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
     }
   }
@@ -998,31 +1037,31 @@ export class HAPServer extends EventEmitter {
   private handleResource(connection: HAPConnection, url: URL, request: IncomingMessage, data: Buffer, response: ServerResponse): void {
     if (!connection.isAuthenticated()) {
       if (!(this.allowInsecureRequest && request.headers && request.headers.authorization === this.accessoryInfo.pincode)) {
-        response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPPairingHTTPCode.CONNECTION_AUTHORIZATION_REQUIRED, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INSUFFICIENT_PRIVILEGES }));
         return;
       }
     }
     if (request.method === "POST") {
       if (data.length === 0) {
-        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" });
+        response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON });
         response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
         return;
       }
 
       const resourceRequest = JSON.parse(data.toString()) as ResourceRequest;
       // call out to listeners to retrieve the resource, snapshot only right now
-      this.emit(HAPServerEventTypes.REQUEST_RESOURCE, resourceRequest, once((error: HAPHttpError | undefined, resource: Buffer) => {
+      this.emit(HAPServerEventTypes.REQUEST_RESOURCE, resourceRequest, once((error, resource) => {
         if (error) {
-          response.writeHead(error.httpCode, { "Content-Type": "application/hap+json" });
+          response.writeHead(error.httpCode, { "Content-Type": HAPMimeTypes.HAP_JSON });
           response.end(JSON.stringify({ status: error.status }));
         } else {
-          response.writeHead(HAPHTTPCode.OK, { "Content-Type": "image/jpeg" });
+          response.writeHead(HAPHTTPCode.OK, { "Content-Type": HAPMimeTypes.IMAGE_JPEG });
           response.end(resource);
         }
       }));
     } else {
-      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": "application/hap+json" }); // method not allowed
+      response.writeHead(HAPHTTPCode.BAD_REQUEST, { "Content-Type": HAPMimeTypes.HAP_JSON }); // method not allowed
       response.end(JSON.stringify({ status: HAPStatus.INVALID_VALUE_IN_REQUEST }));
     }
   }
